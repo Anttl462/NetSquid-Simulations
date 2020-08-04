@@ -16,6 +16,7 @@ from netsquid.components.qchannel import QuantumChannel
 from netsquid.nodes.network import Network
 from pydynaa import EventExpression
 import netsquid.components.instructions as instr
+import matplotlib.pyplot as plt
 
 
 class EntangleNodes(NodeProtocol):
@@ -116,7 +117,7 @@ class EntangleNodes(NodeProtocol):
 class SwitchProtocol(LocalProtocol):
     # Protocol for a complete switch experiment
 
-    def __init__(self, buffersize, nlinks, network, scheduler, workload):
+    def __init__(self, buffersize, nlinks, network, scheduler, workload, rounds):
         super().__init__(nodes=network.nodes,
                          name="Switch Experiment")
         if scheduler not in ["SJF", "STCF", "LJF", "LTCF", "FIFO", "OQF", "YQF"]:
@@ -125,18 +126,32 @@ class SwitchProtocol(LocalProtocol):
         if workload not in ["random", "QKD"]:
             raise ValueError
 
+        if rounds is None:
+            raise ValueError
+
+        # Run simulator for set number of rounds
+        self.nrounds = rounds
+        self.nlinks = nlinks
+        self.buffersize = buffersize
         self.workload = workload
         self.scheduler = scheduler
         # For debugging:
         self.fidelities = np.full((nlinks, buffersize), 0.00000000000000000000000)
+        print(self.fidelities)
 
         # Queue of jobs Each job is (user_1, user_2, current job size, original job size, time when first responded,
-        # completion time)
+        # birth time)
 
         # Queue will be ordered based on scheduler (Shortest Job First (SJF), Shortest Time to Completion First (
         # STCF), Longest Job First (LJF), Longest Time to Completion First (LTCF), First in First Out (FIFO),
-        # Oldest Qubit First (OQF), Youngst Qubit First (YCF))
+        # Oldest Qubit First (OQF), Youngest Qubit First (YCF))
         self.job_queue = []
+
+        # Lists to use later in matplotlib
+        self.e2e_fidelities = []
+        self.eq = np.zeros(self.nrounds)
+        self.throughput = np.zeros(self.nrounds)
+        self.lifetimes = []
         self.turnaround_times = []
         self.response_times = []
 
@@ -241,14 +256,16 @@ class SwitchProtocol(LocalProtocol):
 
     def update_jobs(self):
         if self.workload == "random":
-            num_jobs = np.random.randint(4)
+            num_jobs = np.random.randint(2)
             while num_jobs > 0:
-                job_size = np.random.randint(10)
+                job_size = np.random.randint(5) + 1
                 user_1 = user_2 = -1
                 while user_1 == user_2:
-                    user_1 = np.random.randint(nlinks)
-                    user_2 = np.random.randint(nlinks)
-                self.job_queue.append([user_1, user_2, job_size, job_size, -1, -1])
+                    user_1 = np.random.randint(self.nlinks)
+                    user_2 = np.random.randint(self.nlinks)
+                self.job_queue.append([user_1, user_2, job_size, job_size, False, ns.sim_time()])
+                # New job between user_1 and user_2 of size job_size, born at ns.sim_time(), hasn't been responded to
+                # yet, and currently has size job_size
                 num_jobs -= 1
         elif self.workload == "QKD":
             # TODO
@@ -272,32 +289,36 @@ class SwitchProtocol(LocalProtocol):
             self.job_queue.reverse()
 
     def update_fidelities(self):
-        for i in range(0, nlinks):
-            for j in range(0, buffersize):
+        for i in range(0, self.nlinks):
+            for j in range(0, self.buffersize):
                 q1, = network.get_node("link_node_" + str(i)).qmemory.peek(j)
                 q2, = network.get_node("switch_node_" + str(i)).qmemory.peek(j)
                 if q1 is not None and q2 is not None:
                     self.fidelities[i][j] = ns.qubits.fidelity([q1, q2], ks.b00)
-                    # Not sure if throwing out is needed
-                    # if self.fidelities[i][j] < 0.5:
-                    #     # Throw out
-                    #     network.get_node("link_node_" + str(i)).subcomponents[
-                    #         "QuantumMemory" + str(i) + "Test"].qubit_birthtimes[j] = -1
-                    # print("Fidelity of generated entanglement for link " + str(i) + " in position" + str(j) +
-                    #       ":" + str(ns.qubits.fidelity([q1, q2], ks.b00)))
+                else:
+                    self.fidelities[i][j] = 0
 
     def run(self):
         self.start_subprotocols()
+        rounds_left = self.nrounds
         while True:
-            print("Time =", ns.sim_time())
-            for i in range(0, nlinks):
+            if rounds_left == 0:
+                # pass finished data to visualizer
+                # (self, fidelities, throughput, eq, lifetimes, turnarounds, responses):
+                plotter = Plotter(fidelities=self.e2e_fidelities, throughput=self.throughput, eq=self.eq, lifetimes=None
+                                  , turnarounds=self.turnaround_times, responses=self.response_times)
+
+                break
+            print("-------------------------------------------------------------------")
+            print("Round = ", self.nrounds, ", Time =", ns.sim_time())
+            for i in range(0, self.nlinks):
                 self.subprotocols["entangle_link_" + str(i)].entangled_pairs = 0
                 self.subprotocols["entangle_switch_" + str(i)].entangled_pairs = 0
 
             self.send_signal(Signals.WAITING)
             full_expr = self.await_signal(self.subprotocols["entangle_link_0"], Signals.SUCCESS)
             full_expr = full_expr & self.await_signal(self.subprotocols["entangle_switch_0"], Signals.SUCCESS)
-            for i in range(1, nlinks):
+            for i in range(1, self.nlinks):
                 full_expr = full_expr & self.await_signal(self.subprotocols["entangle_link_" + str(i)], Signals.SUCCESS)
                 full_expr = full_expr & self.await_signal(self.subprotocols["entangle_switch_" + str(i)],
                                                           Signals.SUCCESS)
@@ -306,13 +327,11 @@ class SwitchProtocol(LocalProtocol):
 
             # Generate workload for this timestep:
             self.update_jobs()
-            # self.test()
-
             # Job_queue is now updated and sorted according to scheduler
 
             user_1 = user_2 = -1
             # Iterate through job queue
-            print(self.job_queue)
+            print("Jobs:", self.job_queue)
             for job in range(0, len(self.job_queue)):
                 # Get users from job queue
                 user_1 = self.job_queue[job][0]
@@ -323,70 +342,130 @@ class SwitchProtocol(LocalProtocol):
                     # Update the fidelities:
                     self.update_fidelities()
                     # Get positions of oldest qubits
-                    pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
+                    print("Birthtimes for user", user_1, ":", network.get_node("switch_node_" + str(user_1)).subcomponents[
+                              "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes)
+                    print("Birthtimes for user", user_2, ":", network.get_node("switch_node_" + str(user_2)).subcomponents[
+                              "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes)
+                    pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
                         "QuantumMemory" + str(user_1) + "Test"].get_oldest_qubit()
-                    pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
+                    pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
                         "QuantumMemory" + str(user_2) + "Test"].get_oldest_qubit()
+                    print("Initially: ", pos_1, pos_2)
+
+
+                    # If these qubits have decohered, update birthtimes and positions accordingly. Currently just
+                    # saying that if the fidelity of the link is < 0.6 it's decohered. NO idea if that's a good metric
+                    # NOT SURE IF THIS IS NEEDED
+                    while self.fidelities[user_1][pos_1] < 0.6 and pos_1 != -1:
+                        network.get_node("link_node_" + str(user_1)).subcomponents[
+                            "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
+                        pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
+                            "QuantumMemory" + str(user_1) + "Test"].get_oldest_qubit()
+                    while self.fidelities[user_2][pos_2] < 0.6 and pos_2 != -1:
+                        network.get_node("link_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
+                        pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2) + "Test"].get_oldest_qubit()
 
                     print(self.fidelities)
+                    print("Finally", pos_1, pos_2)
 
+                    # This is the "while" part of the do-while loop
                     if pos_1 == -1 or pos_2 == -1:
                         # No qubits available for these users. Move to next job
                         print("No qubits available")
                         break
 
-                    # If these qubits have decohered, update birthtimes and positions accordingly. Currently just
-                    # saying that if the fidelity of the link is < 0.7 it's decohered. NO idea if that's a good metric
-                    # NOT SURE IF THIS IS NEEDED
-                    # while fidelities[user_1][pos_1] < 0.6 and pos_1 != -1:
-                    #     network.get_node("link_node_" + str(user_1)).subcomponents[
-                    #         "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
-                    #     pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
-                    #         "QuantumMemory" + str(user_1) + "Test"].get_oldest_qubit()
-                    # while fidelities[user_2][pos_2] < 0.6 and pos_2 != -1:
-                    #     network.get_node("link_node_" + str(user_2)).subcomponents[
-                    #         "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
-                    #     pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
-                    #         "QuantumMemory" + str(user_2) + "Test"].get_oldest_qubit()
+                    # Perform the entangling measurement
+                    # Get switch qubits
+                    q1 = network.get_node("switch_node_" + str(user_1)).qmemory.peek(pos_1)[0]
+                    q2 = network.get_node("switch_node_" + str(user_2)).qmemory.peek(pos_2)[0]
+                    # Update birthtimes to indicate these are being used
+                    network.get_node("switch_node_" + str(user_1)).subcomponents[
+                        "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
+                    network.get_node("switch_node_" + str(user_2)).subcomponents[
+                        "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
 
-                    if 0 <= pos_1 < buffersize and 0 <= pos_2 < buffersize:
-                        # Get switch qubits
-                        q1 = network.get_node("switch_node_" + str(user_1)).qmemory.pop(pos_1)[0]
-                        q2 = network.get_node("switch_node_" + str(user_2)).qmemory.pop(pos_2)[0]
-                        # Update birthtimes to indicate these are being used
-                        network.get_node("link_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
+                    # Run BSM
+                    result, _ = self.BellStateMeasurement(q1, q2)
+
+                    # Get link qubits
+                    link_q1 = network.get_node("link_node_" + str(user_1)).qmemory.peek(pos_1)[0]
+                    link_q2 = network.get_node("link_node_" + str(user_2)).qmemory.peek(pos_2)[0]
+
+                    # Apply pauli operators
+                    if result[0][0] == 1:
+                        # Apply X to the qubit at the link node
                         network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
+                            "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_X, [pos_2])
+                        # Wait for processor if busy
+                        if network.get_node("link_node_" + str(user_2)).qmemory.busy:
+                            yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
 
-                        # Run BSM
-                        result, _ = self.BellStateMeasurement(q1, q2)
+                    if result[1][0] == 1:
+                        # Apply Z to the qubit at the link node
+                        network.get_node("link_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_Z, [pos_2])
+                        # Wait for processor if busy
+                        if network.get_node("link_node_" + str(user_2)).qmemory.busy:
+                            yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
+                    print("Fidelity of e2e:" + str(
+                        ns.qubits.fidelity([link_q1, link_q2], ks.b00)))
 
-                        # Get link qubits
-                        link_q1 = network.get_node("link_node_" + str(user_1)).qmemory.peek(pos_1)[0]
-                        link_q2 = network.get_node("link_node_" + str(user_2)).qmemory.peek(pos_2)[0]
+                    # Update list of fidelities and throughput
+                    self.e2e_fidelities.append(ns.qubits.fidelity([link_q1, link_q2], ks.b00))
+                    self.throughput[self.nrounds-rounds_left] += 1
 
-                        # Apply correction operators
-                        if result[0][0] == 1:
-                            network.get_node("link_node_" + str(user_2)).subcomponents[
-                                "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_X, [pos_2])
-                            if network.get_node("link_node_" + str(user_2)).qmemory.busy:
-                                yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
+                    # Pop the qubits from the switch memories:
+                    network.get_node("switch_node_" + str(user_1)).qmemory.pop(pos_1)
+                    network.get_node("switch_node_" + str(user_2)).qmemory.pop(pos_2)
+                    network.get_node("link_node_" + str(user_1)).qmemory.pop(pos_1)
+                    network.get_node("link_node_" + str(user_2)).qmemory.pop(pos_2)
 
-                        if result[1][0] == 1:
-                            network.get_node("link_node_" + str(user_2)).subcomponents[
-                                "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_Z, [pos_2])
-                            if network.get_node("link_node_" + str(user_2)).qmemory.busy:
-                                yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
-                        print("Fidelity of e2e:" + str(
-                            ns.qubits.fidelity([link_q1, link_q2], ks.b00)))
-                    else:
-                        print("No available qubits for users", user_1, "and", user_2)
+                    # Entanglement satisfied, update job queue
+                    self.job_queue[job][2] -= 1
+
+                    # Check if this is the first response to this job:
+                    if not self.job_queue[job][4]:
+                        # Update response time
+                        self.job_queue[job][4] = True
+                        self.response_times.append(ns.sim_time() - self.job_queue[job][5])
+
+                    # Second condition
+                    if self.job_queue[job][2] == 0:
+                        # Job finished
+                        print("Job done, moving on...")
+                        # Update turnaround time
+                        self.turnaround_times.append(ns.sim_time() - self.job_queue[job][5])
+                        # POP JOB OFF QUEUE LATER, or else the indices will get messed up in the outer for loop
+                        break
+            # Pop finished jobs off
+            # Not sure why this loop doesnt work
+            """
+            for job in self.job_queue:
+                print(job)
+                if job[2] == 0:
+                    print("Removing job", job)
+                    self.job_queue.remove(job)
+                    """
+            job = 0
+            while job < len(self.job_queue):
+                if self.job_queue[job][2] == 0:
+                    self.job_queue.pop(job)
+                    job -= 1
+                job += 1
+            # Update E[Q] data
+            self.eq[self.nrounds-rounds_left] = sum([network.get_node("switch_node_"+str(i)).qmemory.get_current_size()
+                                                     for i in range(0, self.nlinks)])
+            rounds_left -= 1
 
 
 class SwitchBuffer(QuantumProcessor):
 
     def __init__(self, name, num_positions, mem_noise_models, phys_instructions, fallback_to_nonphysical):
+        # Just for consistency in variable names:
+        self.buffersize = num_positions
+        # Array to keep track of which qubits are the oldest/youngest
         self.qubit_birthtimes = np.full(num_positions, -1)
         super().__init__(name=name, num_positions=num_positions, mem_noise_models=mem_noise_models,
                          phys_instructions=phys_instructions, fallback_to_nonphysical=fallback_to_nonphysical)
@@ -395,8 +474,9 @@ class SwitchBuffer(QuantumProcessor):
         index = -1
         # Looking for minimum birthtime
         curr_min = ns.sim_time()
-        for i in range(0, nlinks):
+        for i in range(0, self.buffersize):
             if curr_min >= self.qubit_birthtimes[i] >= 0:
+                curr_min = self.qubit_birthtimes[i]
                 index = i
         return index
 
@@ -404,10 +484,65 @@ class SwitchBuffer(QuantumProcessor):
         index = -1
         # Looking for maximum birthtime
         curr_max = ns.sim_time()
-        for i in range(0, nlinks):
+        for i in range(0, self.buffersize):
             if curr_max <= self.qubit_birthtimes[i] >= 0:
                 index = i
         return index
+
+    def get_current_size(self):
+        size = 0
+        for time in self.qubit_birthtimes:
+            if time != -1:
+                size += 1
+        return size
+
+class Plotter:
+    def __init__(self, fidelities, throughput, eq, lifetimes, turnarounds, responses):
+        plt.figure(figsize=(15, 10))
+
+        # Plot E[Q]
+        plt.subplot(2, 3, 1)
+        plt.plot(np.linspace(0, len(eq) - 1, len(eq)), eq)
+        plt.title("Memory Fullness vs Cycles")
+        plt.ylabel("# of qubits total in switch memory")
+        plt.xlabel("Cycle")
+
+        # Plot throughput
+        plt.subplot(2, 3, 2)
+        plt.plot(np.linspace(0, len(throughput)-1, len(throughput)), throughput)
+        plt.title("Throughput vs Cycles")
+        plt.ylabel("E-2-E Entanglements")
+        plt.xlabel("Cycle")
+
+        # Plot fidelities
+        plt.subplot(2, 3, 3)
+        plt.hist(fidelities, bins=30)
+        plt.title("Histogram of E-2-E Entanglement Fidelities")
+        plt.ylabel("Count")
+        plt.xlabel("Fidelity")
+
+        # Plot lifetimes
+        # plt.subplot(2, 3, 4)
+        # plt.hist(lifetimes, bins=30)
+        # plt.title("Histogram of Qubit Lifetimes")
+        # plt.ylabel("Count")
+        # plt.xlabel("Lifetime")
+
+        # Plot turnaround times
+        plt.subplot(2, 3, 5)
+        plt.hist(turnarounds, bins=30)
+        plt.title("Histogram of Turnaround Times")
+        plt.ylabel("Count")
+        plt.xlabel("Turnaround Time")
+
+        # Plot response times
+        plt.subplot(2, 3, 6)
+        plt.hist(responses, bins=30)
+        plt.ylabel("Histogram of Response Times")
+        plt.xlabel("Response Time")
+
+        plt.show()
+
 
 
 def example_network_setup(nlinks, buffersize, prep_delay=5, qchannel_delay=100):
@@ -457,13 +592,9 @@ if __name__ == "__main__":
     buffersize = 5
 
     network = example_network_setup(nlinks, buffersize)
-    switch = SwitchProtocol(buffersize=buffersize, nlinks=nlinks, network=network, scheduler="FIFO", workload="random")
+    switch = SwitchProtocol(buffersize=buffersize, nlinks=nlinks, network=network, scheduler="FIFO", workload="random",
+                            rounds=1000)
     switch.start()
-    ns.sim_run(2000)
-    # for i in range(0, nlinks):
-    #     for j in range(0, buffersize):
-    #         q1, = network.get_node("link_node_" + str(i)).qmemory.peek(j)
-    #         q2, = network.get_node("switch_node_" + str(i)).qmemory.peek(j)
-    #         if q1 is not None and q2 is not None:
-    #             print("Fidelity of generated entanglement: {}".format(ns.qubits.fidelity([q1, q2], ks.b00)))
+    ns.sim_run()
+
     ns.sim_stop()
