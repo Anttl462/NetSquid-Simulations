@@ -1,5 +1,7 @@
 import netsquid as ns
 import numpy as np
+import scipy
+import scipy.stats
 from netsquid.components import DepolarNoiseModel, FibreLossModel, T1T2NoiseModel
 from netsquid.components.component import Message, Port
 from netsquid.components.qmemory import QuantumMemory
@@ -25,7 +27,7 @@ class EntangleNodes(NodeProtocol):
         if role.lower() not in ["source", "receiver"]:
             raise ValueError
         self._is_source = role.lower() == "source"
-        name = name if name else "EntangleNode({}, {})".format(node.name, role)
+        self.name = name if name else "EntangleNode({}, {})".format(node.name, role)
         super().__init__(node=node, name=name)
         if start_expression is not None and not isinstance(start_expression, EventExpression):
             raise TypeError("Start expression should be a {}, not a {}".format(EventExpression, type(start_expression)))
@@ -82,13 +84,17 @@ class EntangleNodes(NodeProtocol):
                 if self._is_source:
                     self.node.subcomponents[self._qsource_name].trigger()
                 yield self.await_port_input(self._qmem_input_port)
+
                 if mem_pos != self._input_mem_pos:
                     self.node.qmemory.execute_instruction(
                         INSTR_SWAP, [self._input_mem_pos, mem_pos])
                     if self.node.qmemory.busy:
                         yield self.await_program(self.node.qmemory)
+                # Update birthtime
                 self.node.qmemory.qubit_birthtimes[mem_pos] = ns.sim_time()
+                # For multiplexing
                 self.entangled_pairs += 1
+                # Move head to next position for next round
                 self.head = (self.head + 1) % buffersize
 
                 self.send_signal(Signals.SUCCESS, mem_pos)
@@ -117,7 +123,7 @@ class EntangleNodes(NodeProtocol):
 class SwitchProtocol(LocalProtocol):
     # Protocol for a complete switch experiment
 
-    def __init__(self, buffersize, nlinks, network, scheduler, workload, rounds):
+    def __init__(self, buffersize, nlinks, network, scheduler, workload, rounds, qubit_policy="oldest"):
         super().__init__(nodes=network.nodes,
                          name="Switch Experiment")
         if scheduler not in ["SJF", "STCF", "LJF", "LTCF", "FIFO", "OQF", "YQF"]:
@@ -130,14 +136,15 @@ class SwitchProtocol(LocalProtocol):
             raise ValueError
 
         # Run simulator for set number of rounds
+        self.network = network
         self.nrounds = rounds
         self.nlinks = nlinks
         self.buffersize = buffersize
         self.workload = workload
+        self.qubit_policy = qubit_policy
         self.scheduler = scheduler
         # For debugging:
         self.fidelities = np.full((nlinks, buffersize), 0.00000000000000000000000)
-        print(self.fidelities)
 
         # Queue of jobs Each job is (user_1, user_2, current job size, original job size, time when first responded,
         # birth time)
@@ -287,6 +294,21 @@ class SwitchProtocol(LocalProtocol):
             # Sort by current size reversed
             self.job_queue.sort(key=lambda x: x[2])
             self.job_queue.reverse()
+        if self.scheduler == "OQF":
+            # Sort by oldest qubit
+            self.job_queue.sort(key=lambda x:
+                self.network.get_node("switch_node_" + str(x[0]).subcomponents[
+                    "QuantumMemory" + str(x[0])].qubit_birthtimes[
+                    self.network.get_node("switch_node_" + str(x[0])).subcomponents[
+                        "QuantumMemory" + str(x[0])].get_oldest_qubit()]))
+            # Very Pythonic
+        if self.scheduler == "YQF":
+            # Sort by youngest qubit
+            self.job_queue.sort(key=lambda x:
+                self.network.get_node("switch_node_" + str(x[0]).subcomponents[
+                    "QuantumMemory" + str(x[0])].qubit_birthtimes[
+                    self.network.get_node("switch_node_" + str(x[0])).subcomponents[
+                        "QuantumMemory" + str(x[0])].get_youngest_qubit()]))
 
     def update_fidelities(self):
         for i in range(0, self.nlinks):
@@ -305,12 +327,13 @@ class SwitchProtocol(LocalProtocol):
             if rounds_left == 0:
                 # pass finished data to visualizer
                 # (self, fidelities, throughput, eq, lifetimes, turnarounds, responses):
-                plotter = Plotter(fidelities=self.e2e_fidelities, throughput=self.throughput, eq=self.eq, lifetimes=None
+                plotter = Plotter(scheduler=self.scheduler, qubit_scheduler=self.qubit_policy, fidelities=self.e2e_fidelities, throughput=self.throughput, eq=self.eq,
+                                  lifetimes=self.lifetimes
                                   , turnarounds=self.turnaround_times, responses=self.response_times)
 
                 break
             print("-------------------------------------------------------------------")
-            print("Round = ", self.nrounds, ", Time =", ns.sim_time())
+            print("Round = ", rounds_left, ", Time =", ns.sim_time())
             for i in range(0, self.nlinks):
                 self.subprotocols["entangle_link_" + str(i)].entangled_pairs = 0
                 self.subprotocols["entangle_switch_" + str(i)].entangled_pairs = 0
@@ -332,7 +355,9 @@ class SwitchProtocol(LocalProtocol):
             user_1 = user_2 = -1
             # Iterate through job queue
             print("Jobs:", self.job_queue)
-            for job in range(0, len(self.job_queue)):
+            # for job in range(0, len(self.job_queue)):
+            job = 0
+            while job < len(self.job_queue):
                 # Get users from job queue
                 user_1 = self.job_queue[job][0]
                 user_2 = self.job_queue[job][1]
@@ -341,34 +366,51 @@ class SwitchProtocol(LocalProtocol):
                 while True:
                     # Update the fidelities:
                     self.update_fidelities()
-                    # Get positions of oldest qubits
-                    print("Birthtimes for user", user_1, ":", network.get_node("switch_node_" + str(user_1)).subcomponents[
-                              "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes)
-                    print("Birthtimes for user", user_2, ":", network.get_node("switch_node_" + str(user_2)).subcomponents[
-                              "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes)
-                    pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
-                        "QuantumMemory" + str(user_1) + "Test"].get_oldest_qubit()
-                    pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
-                        "QuantumMemory" + str(user_2) + "Test"].get_oldest_qubit()
-                    print("Initially: ", pos_1, pos_2)
+                    # Get positions of qubits according to qubit policy
+                    # print("Birthtimes for user", user_1, ":",
+                    #       network.get_node("switch_node_" + str(user_1)).subcomponents[
+                    #           "QuantumMemory" + str(user_1)].qubit_birthtimes)
+                    # print("Birthtimes for user", user_2, ":",
+                    #       network.get_node("switch_node_" + str(user_2)).subcomponents[
+                    #           "QuantumMemory" + str(user_2)].qubit_birthtimes)
 
+                    if self.qubit_policy == "oldest":
+                        pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                            "QuantumMemory" + str(user_1)].get_oldest_qubit()
+                        pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2)].get_oldest_qubit()
+                    elif self.qubit_policy == "youngest":
+                        pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                            "QuantumMemory" + str(user_1)].get_youngest_qubit()
+                        pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2)].get_youngest_qubit()
+
+                    # print("Initially: ", pos_1, pos_2)
 
                     # If these qubits have decohered, update birthtimes and positions accordingly. Currently just
                     # saying that if the fidelity of the link is < 0.6 it's decohered. NO idea if that's a good metric
                     # NOT SURE IF THIS IS NEEDED
                     while self.fidelities[user_1][pos_1] < 0.6 and pos_1 != -1:
                         network.get_node("link_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
-                        pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1) + "Test"].get_oldest_qubit()
+                            "QuantumMemory" + str(user_1)].qubit_birthtimes[pos_1] = -1
+                        if self.qubit_policy == "oldest":
+                            pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
+                                "QuantumMemory" + str(user_1)].get_oldest_qubit()
+                        elif self.qubit_policy == "youngest":
+                            pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
+                                "QuantumMemory" + str(user_1)].get_youngest_qubit()
                     while self.fidelities[user_2][pos_2] < 0.6 and pos_2 != -1:
                         network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
-                        pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2) + "Test"].get_oldest_qubit()
+                            "QuantumMemory" + str(user_2)].qubit_birthtimes[pos_2] = -1
+                        if self.qubit_policy == "oldest":
+                            pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
+                                "QuantumMemory" + str(user_2)].get_oldest_qubit()
+                        elif self.qubit_policy == "youngest":
+                            pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
+                                "QuantumMemory" + str(user_2)].get_youngest_qubit()
 
                     print(self.fidelities)
-                    print("Finally", pos_1, pos_2)
+                    print("Using positions", pos_1, pos_2)
 
                     # This is the "while" part of the do-while loop
                     if pos_1 == -1 or pos_2 == -1:
@@ -380,11 +422,6 @@ class SwitchProtocol(LocalProtocol):
                     # Get switch qubits
                     q1 = network.get_node("switch_node_" + str(user_1)).qmemory.peek(pos_1)[0]
                     q2 = network.get_node("switch_node_" + str(user_2)).qmemory.peek(pos_2)[0]
-                    # Update birthtimes to indicate these are being used
-                    network.get_node("switch_node_" + str(user_1)).subcomponents[
-                        "QuantumMemory" + str(user_1) + "Test"].qubit_birthtimes[pos_1] = -1
-                    network.get_node("switch_node_" + str(user_2)).subcomponents[
-                        "QuantumMemory" + str(user_2) + "Test"].qubit_birthtimes[pos_2] = -1
 
                     # Run BSM
                     result, _ = self.BellStateMeasurement(q1, q2)
@@ -397,7 +434,7 @@ class SwitchProtocol(LocalProtocol):
                     if result[0][0] == 1:
                         # Apply X to the qubit at the link node
                         network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_X, [pos_2])
+                            "QuantumMemory" + str(user_2)].execute_instruction(instr.INSTR_X, [pos_2])
                         # Wait for processor if busy
                         if network.get_node("link_node_" + str(user_2)).qmemory.busy:
                             yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
@@ -405,16 +442,26 @@ class SwitchProtocol(LocalProtocol):
                     if result[1][0] == 1:
                         # Apply Z to the qubit at the link node
                         network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2) + "Test"].execute_instruction(instr.INSTR_Z, [pos_2])
+                            "QuantumMemory" + str(user_2)].execute_instruction(instr.INSTR_Z, [pos_2])
                         # Wait for processor if busy
                         if network.get_node("link_node_" + str(user_2)).qmemory.busy:
                             yield self.await_program(network.get_node("link_node_" + str(user_2)).qmemory)
                     print("Fidelity of e2e:" + str(
                         ns.qubits.fidelity([link_q1, link_q2], ks.b00)))
 
-                    # Update list of fidelities and throughput
+                    # Update list of fidelities, throughput, and lifetimes
                     self.e2e_fidelities.append(ns.qubits.fidelity([link_q1, link_q2], ks.b00))
-                    self.throughput[self.nrounds-rounds_left] += 1
+                    self.throughput[self.nrounds - rounds_left] += 1
+                    self.lifetimes.append(ns.sim_time() - network.get_node("switch_node_" + str(user_1)).subcomponents[
+                        "QuantumMemory" + str(user_1)].qubit_birthtimes[pos_1])
+                    self.lifetimes.append(ns.sim_time() - network.get_node("switch_node_" + str(user_2)).subcomponents[
+                        "QuantumMemory" + str(user_2)].qubit_birthtimes[pos_2])
+
+                    # Update birthtimes to indicate these are now used
+                    network.get_node("switch_node_" + str(user_1)).subcomponents[
+                        "QuantumMemory" + str(user_1)].qubit_birthtimes[pos_1] = -1
+                    network.get_node("switch_node_" + str(user_2)).subcomponents[
+                        "QuantumMemory" + str(user_2)].qubit_birthtimes[pos_2] = -1
 
                     # Pop the qubits from the switch memories:
                     network.get_node("switch_node_" + str(user_1)).qmemory.pop(pos_1)
@@ -437,26 +484,15 @@ class SwitchProtocol(LocalProtocol):
                         print("Job done, moving on...")
                         # Update turnaround time
                         self.turnaround_times.append(ns.sim_time() - self.job_queue[job][5])
-                        # POP JOB OFF QUEUE LATER, or else the indices will get messed up in the outer for loop
+                        # Pop job off queue and update the indices so things don't go bad
+                        self.job_queue.pop(job)
+                        job -= 1
                         break
-            # Pop finished jobs off
-            # Not sure why this loop doesnt work
-            """
-            for job in self.job_queue:
-                print(job)
-                if job[2] == 0:
-                    print("Removing job", job)
-                    self.job_queue.remove(job)
-                    """
-            job = 0
-            while job < len(self.job_queue):
-                if self.job_queue[job][2] == 0:
-                    self.job_queue.pop(job)
-                    job -= 1
                 job += 1
             # Update E[Q] data
-            self.eq[self.nrounds-rounds_left] = sum([network.get_node("switch_node_"+str(i)).qmemory.get_current_size()
-                                                     for i in range(0, self.nlinks)])
+            self.eq[self.nrounds - rounds_left] = sum(
+                [network.get_node("switch_node_" + str(i)).qmemory.get_current_size()
+                 for i in range(0, self.nlinks)])
             rounds_left -= 1
 
 
@@ -483,9 +519,10 @@ class SwitchBuffer(QuantumProcessor):
     def get_youngest_qubit(self):
         index = -1
         # Looking for maximum birthtime
-        curr_max = ns.sim_time()
+        curr_max = -1
         for i in range(0, self.buffersize):
             if curr_max <= self.qubit_birthtimes[i] >= 0:
+                curr_max = self.qubit_birthtimes[i]
                 index = i
         return index
 
@@ -496,20 +533,29 @@ class SwitchBuffer(QuantumProcessor):
                 size += 1
         return size
 
+
 class Plotter:
-    def __init__(self, fidelities, throughput, eq, lifetimes, turnarounds, responses):
+    def __init__(self, scheduler, qubit_scheduler, fidelities, throughput, eq, lifetimes, turnarounds, responses):
         plt.figure(figsize=(15, 10))
+        # Center confidence intervals at 0 to give a +-
+        throughput_avg = np.average(throughput)
+        throughput_conf = scipy.stats.norm.interval(0.95, loc=0, scale=np.std(throughput) / np.sqrt(len(throughput)))
+        eq_avg = np.average(eq)
+        eq_conf = scipy.stats.norm.interval(0.95, loc=0, scale=np.std(eq) / np.sqrt(len(eq)))
 
         # Plot E[Q]
         plt.subplot(2, 3, 1)
-        plt.plot(np.linspace(0, len(eq) - 1, len(eq)), eq)
-        plt.title("Memory Fullness vs Cycles")
+        plt.plot(np.linspace(0, len(eq) - 1, len(eq)), eq, label="Avg=" + str(eq_avg) + "+-" + str(eq_conf[0]))
+        plt.legend()
+        plt.title("(Scheduler="+scheduler+", Qubit Policy="+qubit_scheduler+") Memory Fullness vs Cycles")
         plt.ylabel("# of qubits total in switch memory")
         plt.xlabel("Cycle")
 
         # Plot throughput
         plt.subplot(2, 3, 2)
-        plt.plot(np.linspace(0, len(throughput)-1, len(throughput)), throughput)
+        plt.plot(np.linspace(0, len(throughput) - 1, len(throughput)), throughput,
+                 label="Avg=" + str(throughput_avg) + "+-" + str(throughput_conf[0]))
+        plt.legend()
         plt.title("Throughput vs Cycles")
         plt.ylabel("E-2-E Entanglements")
         plt.xlabel("Cycle")
@@ -522,30 +568,30 @@ class Plotter:
         plt.xlabel("Fidelity")
 
         # Plot lifetimes
-        # plt.subplot(2, 3, 4)
-        # plt.hist(lifetimes, bins=30)
-        # plt.title("Histogram of Qubit Lifetimes")
-        # plt.ylabel("Count")
-        # plt.xlabel("Lifetime")
+        plt.subplot(2, 3, 4)
+        plt.hist(lifetimes, bins=30)
+        plt.title("Histogram of Qubit Lifetimes")
+        plt.ylabel("Count")
+        plt.xlabel("Lifetime (ns)")
 
         # Plot turnaround times
         plt.subplot(2, 3, 5)
         plt.hist(turnarounds, bins=30)
         plt.title("Histogram of Turnaround Times")
         plt.ylabel("Count")
-        plt.xlabel("Turnaround Time")
+        plt.xlabel("Turnaround Time (ns)")
 
         # Plot response times
         plt.subplot(2, 3, 6)
         plt.hist(responses, bins=30)
-        plt.ylabel("Histogram of Response Times")
-        plt.xlabel("Response Time")
+        plt.title("Histogram of Response Times")
+        plt.ylabel("Count")
+        plt.xlabel("Response Time (ns)")
 
         plt.show()
 
 
-
-def example_network_setup(nlinks, buffersize, prep_delay=5, qchannel_delay=100):
+def network_setup(nlinks, buffersize, prep_delay=0):
     network = Network("Entangle_nodes")
 
     link_nodes = network.add_nodes(["link_node_" + str(i) for i in range(0, nlinks)])
@@ -554,31 +600,36 @@ def example_network_setup(nlinks, buffersize, prep_delay=5, qchannel_delay=100):
     phys_instructions = [PhysicalInstruction(instr.INSTR_SWAP, duration=3),
                          PhysicalInstruction(instr.INSTR_X, duration=1),
                          PhysicalInstruction(instr.INSTR_Z, duration=1)]
-    noise = T1T2NoiseModel(T1=2000, T2=2000)
+    noise = T1T2NoiseModel(T1=500, T2=500)
+    noise = DepolarNoiseModel(time_independent=False, depolar_rate=1000000)
+    # loss = FibreLossModel(p_loss_init=0.001, p_loss_length=0)
+    fibre_delay = FibreDelayModel()
+    fixed_delay = FixedDelayModel(delay=prep_delay)
 
     for i in range(0, nlinks):
         link_nodes[i].add_subcomponent(SwitchBuffer(
-            "QuantumMemory" + str(i) + "Test", buffersize, fallback_to_nonphysical=True,
+            "QuantumMemory" + str(i), buffersize, fallback_to_nonphysical=True,
             phys_instructions=phys_instructions,
             mem_noise_models=[noise] * buffersize))
         switch_nodes[i].add_subcomponent(SwitchBuffer(
-            "QuantumMemory" + str(i) + "Test", buffersize, fallback_to_nonphysical=True,
+            "QuantumMemory" + str(i), buffersize, fallback_to_nonphysical=True,
             phys_instructions=phys_instructions,
             mem_noise_models=[noise] * buffersize))
 
         link_nodes[i].add_subcomponent(
-            QSource("QSource" + str(i) + "Test", state_sampler=StateSampler(qs_reprs=[ks.b00]),
+            QSource("QSource" + str(i), state_sampler=StateSampler(qs_reprs=[ks.b00]),
                     num_ports=2, status=SourceStatus.EXTERNAL,
-                    models={"emission_delay_model": FixedDelayModel(delay=prep_delay)}))
+                    models={"emission_delay_model": fixed_delay}))
         # Create and connect quantum channel:
-        qchannel = QuantumChannel("QuantumChannel" + str(i) + "Test", length=0.1,
-                                  models={'quantum_noise_model': noise, "delay_model": FibreDelayModel()})
+        qchannel = QuantumChannel("QuantumChannel" + str(i), length=0.01,
+                                  models={'quantum_noise_model': noise,
+                                          "delay_model": fibre_delay})
         port_name_a, port_name_b = network.add_connection(
             link_nodes[i], switch_nodes[i], channel_to=qchannel, label="connection" + str(i))
         # Setup Link ports:
-        link_nodes[i].subcomponents["QSource" + str(i) + "Test"].ports["qout0"].forward_output(
+        link_nodes[i].subcomponents["QSource" + str(i)].ports["qout0"].forward_output(
             link_nodes[i].ports[port_name_a])
-        link_nodes[i].subcomponents["QSource" + str(i) + "Test"].ports["qout1"].connect(
+        link_nodes[i].subcomponents["QSource" + str(i)].ports["qout1"].connect(
             link_nodes[i].qmemory.ports["qin0"])
         # Setup Switch ports:
         switch_nodes[i].ports[port_name_b].forward_input(switch_nodes[i].qmemory.ports["qin0"])
@@ -591,10 +642,8 @@ if __name__ == "__main__":
     nlinks = 5
     buffersize = 5
 
-    network = example_network_setup(nlinks, buffersize)
+    network = network_setup(nlinks, buffersize)
     switch = SwitchProtocol(buffersize=buffersize, nlinks=nlinks, network=network, scheduler="FIFO", workload="random",
-                            rounds=1000)
+                            rounds=10000, qubit_policy="youngest")
     switch.start()
     ns.sim_run()
-
-    ns.sim_stop()
