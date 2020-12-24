@@ -129,7 +129,7 @@ class SwitchProtocol(LocalProtocol):
     def __init__(self, buffersize, nlinks, p, network, scheduler, workload, rounds, qubit_policy="oldest"):
         super().__init__(nodes=network.nodes,
                          name="Switch Experiment")
-        if scheduler not in ["SJF", "STCF", "LJF", "LTCF", "FIFO", "OQF", "YQF"]:
+        if scheduler not in ["SJF", "STCF", "LJF", "LTCF", "FIFO", "OQF", "YQF", "Stationary"]:
             raise ValueError
 
         if workload not in ["random", "QKD"]:
@@ -152,6 +152,15 @@ class SwitchProtocol(LocalProtocol):
             p = np.full(nlinks, 1)
         self.p = p
 
+        # For "random" workload:
+        self.max_num_jobs = 2
+        self.max_job_size = 1
+        self.lambd = np.zeros([self.nlinks, self.nlinks])
+        for x in range(0, nlinks):
+            for y in range(0, nlinks):
+                # Average rate
+                if x != y:
+                    self.lambd[x][y] = ((self.max_num_jobs / 2) * (self.max_job_size + 1) / 2) / (nlinks ** 2)
         # For debugging:
         self.fidelities = np.full((nlinks, buffersize), 0.00000000000000000000000)
 
@@ -274,9 +283,10 @@ class SwitchProtocol(LocalProtocol):
     # Update the Queue of Jobs according to the current workload configuration and scheduling policy
     def update_jobs(self, round_number):
         if self.workload == "random":
-            num_jobs = np.random.randint(2)
+            num_jobs = np.random.randint(self.max_num_jobs)
             while num_jobs > 0:
-                job_size = np.random.randint(5) + 1
+                # job_size = np.random.randint(max_job_size) + 1
+                job_size = 1
                 user_1 = user_2 = -1
                 while user_1 == user_2:
                     user_1 = np.random.randint(self.nlinks)
@@ -285,9 +295,16 @@ class SwitchProtocol(LocalProtocol):
                 # New job between user_1 and user_2 of size job_size, born at round r, hasn't been responded to
                 # yet, and currently has size job_size
                 num_jobs -= 1
+
         elif self.workload == "QKD":
-            # TODO
-            print("Not done yet")
+            # Large sporadic bursts (effectively just random workload with at most 1 job per time slot)
+            if np.random.randint(750) == 0:
+                job_size = np.random.randint(500) + 500
+                user_1 = user_2 = -1
+                while user_1 == user_2:
+                    user_1 = np.random.randint(self.nlinks)
+                    user_2 = np.random.randint(self.nlinks)
+                self.job_queue.append([user_1, user_2, job_size, job_size, False, round_number])
 
         if self.scheduler == "FIFO":
             return
@@ -308,18 +325,38 @@ class SwitchProtocol(LocalProtocol):
         if self.scheduler == "OQF":
             # Sort by oldest qubit
             self.job_queue.sort(key=lambda x:
-            self.network.get_node("switch_node_" + str(x[0]).subcomponents[
+            self.network.get_node("switch_node_" + str(x[0])).subcomponents[
                 "QuantumMemory" + str(x[0])].qubit_birthtimes[
                 self.network.get_node("switch_node_" + str(x[0])).subcomponents[
-                    "QuantumMemory" + str(x[0])].get_oldest_qubit()]))
+                    "QuantumMemory" + str(x[0])].get_oldest_qubit()])
             # Very Pythonic
         if self.scheduler == "YQF":
             # Sort by youngest qubit
             self.job_queue.sort(key=lambda x:
-            self.network.get_node("switch_node_" + str(x[0]).subcomponents[
+            self.network.get_node("switch_node_" + str(x[0])).subcomponents[
                 "QuantumMemory" + str(x[0])].qubit_birthtimes[
                 self.network.get_node("switch_node_" + str(x[0])).subcomponents[
-                    "QuantumMemory" + str(x[0])].get_youngest_qubit()]))
+                    "QuantumMemory" + str(x[0])].get_youngest_qubit()])
+
+        if self.scheduler == "Stationary":
+
+            # Normalization: For each link: p^0x_xy + p^0x_xz + ... <= 1
+            # Constraints:  e2ee's need an LLE from both constituent links:
+            #       p_x T p^0x_xy = p_y T p^0y_xy ---> p_x p^0x_xy - p_y p^0y_xy = 0
+            # Stability: For each pair of links: p_x p^0x_xy q = \lambda_xy
+            #           - (actually > \lambda_xy, but need to solve)
+            #           - q = 1 for now... the BSM in the program always "succeeds" but can give bad fidelity
+            #            \sum_xy \lambda_xy < Total generated LLE's per unit time = \sum_x p_x q
+
+            # group the jobs up by which pair they're using (simulates separate queues per pair of links)
+            self.job_queue.sort(key=lambda x: (x[0], x[1]))
+            solution = np.zeros([self.nlinks, self.nlinks])
+            for x in range(0, self.nlinks):
+                for y in range(0, x):
+                    solution[x][y] = self.lambd[x][y] / (self.p[x] * 1)  # 1 = q
+                    solution[y][x] = solution[x][y] * (self.p[x] / self.p[y])
+            return solution
+        return self.job_queue
 
     # Update the matrix of fidelities for monitoring
     def update_fidelities(self):
@@ -332,6 +369,42 @@ class SwitchProtocol(LocalProtocol):
                 else:
                     self.fidelities[i][j] = 0
 
+    def get_qubit_positions(self, user_1, user_2):
+        # get initial value, then check if decohered
+        if self.qubit_policy == "oldest":
+            pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                "QuantumMemory" + str(user_1)].get_oldest_qubit()
+            pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                "QuantumMemory" + str(user_2)].get_oldest_qubit()
+        elif self.qubit_policy == "youngest":
+            pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                "QuantumMemory" + str(user_1)].get_youngest_qubit()
+            pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                "QuantumMemory" + str(user_2)].get_youngest_qubit()
+
+        # If these qubits have decohered, update birthtimes and positions accordingly. Currently just
+        # saying that if the fidelity of the link is < 0.6 it's decohered. I've been told this is a good metric.
+        while self.fidelities[user_1][pos_1] < 0.6 and pos_1 != -1:
+            network.get_node("switch_node_" + str(user_1)).subcomponents[
+                "QuantumMemory" + str(user_1)].qubit_birthtimes[pos_1] = -1
+            if self.qubit_policy == "oldest":
+                pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                    "QuantumMemory" + str(user_1)].get_oldest_qubit()
+            elif self.qubit_policy == "youngest":
+                pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
+                    "QuantumMemory" + str(user_1)].get_youngest_qubit()
+        while self.fidelities[user_2][pos_2] < 0.6 and pos_2 != -1:
+            network.get_node("switch_node_" + str(user_2)).subcomponents[
+                "QuantumMemory" + str(user_2)].qubit_birthtimes[pos_2] = -1
+            if self.qubit_policy == "oldest":
+                pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                    "QuantumMemory" + str(user_2)].get_oldest_qubit()
+            elif self.qubit_policy == "youngest":
+                pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
+                    "QuantumMemory" + str(user_2)].get_youngest_qubit()
+
+        return [pos_1, pos_2]
+
     def run(self):
         self.start_subprotocols()
         rounds_left = self.nrounds
@@ -341,9 +414,8 @@ class SwitchProtocol(LocalProtocol):
                 # (self, fidelities, throughput, eq, lifetimes, turnarounds, responses):
                 plotter = Plotter(scheduler=self.scheduler, qubit_scheduler=self.qubit_policy,
                                   fidelities=self.e2e_fidelities, throughput=self.throughput, eq=self.eq,
-                                  lifetimes=self.lifetimes
-                                  , turnarounds=self.turnaround_times, responses=self.response_times)
-
+                                  lifetimes=self.lifetimes, turnarounds=self.turnaround_times,
+                                  responses=self.response_times)
                 break
             print("-------------------------------------------------------------------")
             print("Round = ", rounds_left, ", Time =", ns.sim_time())
@@ -360,6 +432,7 @@ class SwitchProtocol(LocalProtocol):
                 full_expr = full_expr & self.await_signal(self.subprotocols["entangle_switch_" + str(i)],
                                                           Signals.SUCCESS)
             yield full_expr
+
             # All links generated entanglements now
             # Apply probabilistic generation:
             for i in range(0, nlinks):
@@ -391,8 +464,8 @@ class SwitchProtocol(LocalProtocol):
                     network.get_node("link_node_" + str(i)).subcomponents[
                         "QuantumMemory" + str(i)].qubit_birthtimes_cycles[mem_pos_2] = self.nrounds - rounds_left
 
-            # Generate workload for this time step:
-            self.update_jobs(self.nrounds - rounds_left)
+            # Generate workload for this time step (use the "solution" variable for MW and Stationary):
+            solution = self.update_jobs(self.nrounds - rounds_left)
             # Job_queue is now updated and sorted according to scheduler
 
             # Iterate through job queue
@@ -408,48 +481,9 @@ class SwitchProtocol(LocalProtocol):
                 while True:
                     # Update the fidelities:
                     self.update_fidelities()
+
                     # Get positions of qubits according to qubit policy
-                    # print("Birthtimes for user", user_1, ":",
-                    #       network.get_node("switch_node_" + str(user_1)).subcomponents[
-                    #           "QuantumMemory" + str(user_1)].qubit_birthtimes)
-                    # print("Birthtimes for user", user_2, ":",
-                    #       network.get_node("switch_node_" + str(user_2)).subcomponents[
-                    #           "QuantumMemory" + str(user_2)].qubit_birthtimes)
-
-                    if self.qubit_policy == "oldest":
-                        pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1)].get_oldest_qubit()
-                        pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2)].get_oldest_qubit()
-                    elif self.qubit_policy == "youngest":
-                        pos_1 = network.get_node("switch_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1)].get_youngest_qubit()
-                        pos_2 = network.get_node("switch_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2)].get_youngest_qubit()
-
-                    # print("Initially: ", pos_1, pos_2)
-
-                    # If these qubits have decohered, update birthtimes and positions accordingly. Currently just
-                    # saying that if the fidelity of the link is < 0.6 it's decohered. NO idea if that's a good metric
-                    # NOT SURE IF THIS IS NEEDED
-                    while self.fidelities[user_1][pos_1] < 0.6 and pos_1 != -1:
-                        network.get_node("link_node_" + str(user_1)).subcomponents[
-                            "QuantumMemory" + str(user_1)].qubit_birthtimes[pos_1] = -1
-                        if self.qubit_policy == "oldest":
-                            pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
-                                "QuantumMemory" + str(user_1)].get_oldest_qubit()
-                        elif self.qubit_policy == "youngest":
-                            pos_1 = network.get_node("link_node_" + str(user_1)).subcomponents[
-                                "QuantumMemory" + str(user_1)].get_youngest_qubit()
-                    while self.fidelities[user_2][pos_2] < 0.6 and pos_2 != -1:
-                        network.get_node("link_node_" + str(user_2)).subcomponents[
-                            "QuantumMemory" + str(user_2)].qubit_birthtimes[pos_2] = -1
-                        if self.qubit_policy == "oldest":
-                            pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
-                                "QuantumMemory" + str(user_2)].get_oldest_qubit()
-                        elif self.qubit_policy == "youngest":
-                            pos_2 = network.get_node("link_node_" + str(user_2)).subcomponents[
-                                "QuantumMemory" + str(user_2)].get_youngest_qubit()
+                    [pos_1, pos_2] = self.get_qubit_positions()
 
                     print(self.fidelities)
                     print("Using positions", pos_1, pos_2)
@@ -495,10 +529,12 @@ class SwitchProtocol(LocalProtocol):
                     self.e2e_fidelities.append(ns.qubits.fidelity([link_q1, link_q2], ks.b00))
                     self.throughput[self.nrounds - rounds_left] += 1
                     # Lifetime = current round - birth round of qubit
-                    self.lifetimes.append(self.nrounds - rounds_left - network.get_node("switch_node_" + str(user_1)).subcomponents[
-                        "QuantumMemory" + str(user_1)].qubit_birthtimes_cycles[pos_1])
-                    self.lifetimes.append(self.nrounds - rounds_left - network.get_node("switch_node_" + str(user_2)).subcomponents[
-                        "QuantumMemory" + str(user_2)].qubit_birthtimes_cycles[pos_2])
+                    self.lifetimes.append(
+                        self.nrounds - rounds_left - network.get_node("switch_node_" + str(user_1)).subcomponents[
+                            "QuantumMemory" + str(user_1)].qubit_birthtimes_cycles[pos_1])
+                    self.lifetimes.append(
+                        self.nrounds - rounds_left - network.get_node("switch_node_" + str(user_2)).subcomponents[
+                            "QuantumMemory" + str(user_2)].qubit_birthtimes_cycles[pos_2])
 
                     # Update birthtimes to indicate these are now used
                     network.get_node("switch_node_" + str(user_1)).subcomponents[
@@ -531,6 +567,7 @@ class SwitchProtocol(LocalProtocol):
                         self.job_queue.pop(job)
                         job -= 1
                         break
+
                 job += 1
             # Update E[Q] data
             self.eq[self.nrounds - rounds_left] = sum(
@@ -582,7 +619,6 @@ class SwitchBuffer(QuantumProcessor):
 class Plotter:
     def __init__(self, scheduler, qubit_scheduler, fidelities, throughput, eq, lifetimes, turnarounds, responses):
         plt.figure(figsize=(15, 10))
-
         # alpha for EWMA
         alpha = 0.05
 
@@ -637,14 +673,14 @@ class Plotter:
 
         # Plot turnaround times
         plt.subplot(2, 3, 5)
-        plt.hist(turnarounds, bins=max(turnarounds))
+        plt.hist(turnarounds, bins=max(10, max(turnarounds)))
         plt.title("Histogram of Turnaround Times")
         plt.ylabel("Count")
         plt.xlabel("Turnaround Time (cycles)")
 
         # Plot response times
         plt.subplot(2, 3, 6)
-        plt.hist(responses, bins=max(responses))
+        plt.hist(responses, bins=max(10, max(responses)))
         plt.title("Histogram of Response Times")
         plt.ylabel("Count")
         plt.xlabel("Response Time (cycles)")
@@ -666,7 +702,6 @@ def network_setup(nlinks, buffersize, prep_delay=0):
     phys_instructions = [PhysicalInstruction(instr.INSTR_SWAP, duration=1, quantum_noise_model=dephase),
                          PhysicalInstruction(instr.INSTR_X, duration=1, quantum_noise_model=dephase),
                          PhysicalInstruction(instr.INSTR_Z, duration=1, quantum_noise_model=dephase)]
-
 
     # loss = FibreLossModel(p_loss_init=0.001, p_loss_length=0)
     fibre_delay = FibreDelayModel()
