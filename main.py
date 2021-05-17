@@ -64,85 +64,6 @@ def run_list(list):
 
         print("Finished simulation in "+str(int(time() * 1000) - start)+" ms")
 
-def run_vs_p():
-    for q in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:        
-        nlinks = 5
-        buffersize = 100
-        scheduler = "FIFO"
-        qubit_scheduler = 'oldest'
-        workload = "markov"
-        q = 0.9
-        nrounds = 4000
-
-        param_list = []
-        for i in range(nruns):
-            param_list.append((i, nlinks, buffersize, scheduler, p, q, nrounds, qubit_scheduler, workload, 'p', 1000000))
-        pool = Pool(processes=nruns)
-        print(param_list)
-        pool.map(run_process, param_list)
-
-        print("Finished simulation in "+str(int(time() * 1000) - start)+" ms")
-
-def run_vs_q():
-    for q in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:        
-        nlinks = 5
-        buffersize = 100
-        scheduler = "FIFO"
-        qubit_scheduler = 'oldest'
-        workload = "markov"
-        p = 0.9
-        nrounds = 4000
-
-        param_list = []
-        for i in range(nruns):
-            param_list.append((i, nlinks, buffersize, scheduler, p, q, nrounds, qubit_scheduler, workload, 'q', 1000000))
-        pool = Pool(processes=nruns)
-        print(param_list)
-        pool.map(run_process, param_list)
-
-        print("Finished simulation in "+str(int(time() * 1000) - start)+" ms")
-
-def run_vs_B():
-    for buffersize in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:        
-        nlinks = 5
-        scheduler = "FIFO"
-        qubit_scheduler = 'oldest'
-        workload = "markov"
-        q = 0.9
-        p = 0.9
-        nrounds = 4000
-
-        param_list = []
-        for i in range(nruns):
-            param_list.append((i, nlinks, buffersize, scheduler, p, q, nrounds, qubit_scheduler, workload, 'B', 1000000))
-        pool = Pool(processes=nruns)
-        print(param_list)
-        pool.map(run_process, param_list)
-
-        print("Finished simulation in "+str(int(time() * 1000) - start)+" ms")
-
-def run_vs_T2():
-    # TODO: EMAIL WENHAN ABOUT T2 VALUES
-    for T2 in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:        
-        nlinks = 5
-        scheduler = "FIFO"
-        qubit_scheduler = 'oldest'
-        workload = "markov"
-        q = 0.9
-        p = 0.9
-        nrounds = 4000
-        T2 = 'bruh?'
-
-        param_list = []
-        for i in range(nruns):
-            param_list.append((i, nlinks, buffersize, scheduler, p, q, nrounds, qubit_scheduler, workload, 'T2', 1000000))
-        pool = Pool(processes=nruns)
-        print(param_list)
-        pool.map(run_process, param_list)
-
-        print("Finished simulation in "+str(int(time() * 1000) - start)+" ms")
-
-
 
 
 # DATA PROCESSING
@@ -257,39 +178,30 @@ def just_print_values(to_print):
         print('\t Outstanding Requests: ' + str(outstanding_requests_avg) + ' +- ' + str(outstanding_requests_avg_conf[1]))
         
 
-def plot_vs_q(to_plot):
+def plot_vs_q():
     plt.figure(figsize=(24, 6))
-    outstanding_requests_final = []
-    turnaround_times_final = []
-    fidelities_final = []
+    outstanding_requests_final = [[],[],[],[]]
+    turnaround_times_final = [[],[],[],[]]
+    fidelities_final = [[],[],[],[]]
 
-    outstanding_requests_final_err = []
-    turnaround_times_final_err = []
-    fidelities_final_err = []
+    outstanding_requests_final_err = [[],[],[],[]]
+    turnaround_times_final_err = [[],[],[],[]]
+    fidelities_final_err = [[],[],[],[]]
 
     qs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    params = []
+    params = [["O", "4"], ["O", "8"], ["Y", "4"], ["Y", "8"]]
     for j in range(0, len(params)):
-        for k in range(1, 11):
-            print(to_plot[k-1] + "...")
-            tokens = to_plot[k-1].split("_")
-            
-            workload = tokens[0]
-            scheduler = tokens[1]
-            qubit_scheduler = tokens[2]
-            qs.append(tokens[5])
-            
-            eq = []
-            throughput = []
+        for q in qs:
+            name = "Light_FIFO_"+params[j][0]+"_100_0.9_"+str(q)+"_1000000_q_"+params[j][1]
+            print(name+ "...")
+                        
             outstanding_requests = []
-            response_times = []
             turnaround_times = []
             fidelities = []
-            lifetimes = []
             for i in range(0, nruns):
-                timestep_file = open('/home/aarinaldi/NSSims/Sim_Data/' + to_plot + '/timestep_data'+str(i)+'.npy', 'rb')
-                job_file = open('/home/aarinaldi/NSSims/Sim_Data/' + to_plot + '/job_data'+str(i)+'.npy', 'rb')
-                e2ee_file = open('/home/aarinaldi/NSSims/Sim_Data/' + to_plot + '/e2ee_data'+str(i)+'.npy', 'rb')
+                timestep_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/timestep_data'+str(i)+'.npy', 'rb')
+                job_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/job_data'+str(i)+'.npy', 'rb')
+                e2ee_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/e2ee_data'+str(i)+'.npy', 'rb')
 
                 timestep_temp = []
                 while True:
@@ -320,63 +232,437 @@ def plot_vs_q(to_plot):
                 turnaround_times.append(job_data[:,1])
                 fidelities.append(e2ee_data[:,0])
 
-            nrounds = len(eq[0]) 
+            nrounds = len(outstanding_requests[0]) 
 
             fidelities_full = np.array([])
             for i in range(0, nruns):
                 fidelities_full = np.append(fidelities_full, np.array(fidelities[i]))
 
-            fidelities_final.append(np.average(fidelities_full))
-            fidelities_final_err.append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(fidelities_full) / np.sqrt(len(fidelities_full)))[0])
+            fidelities_final[j].append(np.average(fidelities_full))
+            fidelities_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(fidelities_full) / np.sqrt(len(fidelities_full)))[0])
 
             turnaround_times_full = np.array([])
             for i in range(0, nruns):
                 turnaround_times_full = np.append(turnaround_times_full, np.array(turnaround_times[i]))
 
-            turnaround_times_final.append(np.average(turnaround_times_full))
-            turnaround_times_final_err.append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(turnaround_times_full) / np.sqrt(len(turnaround_times_full)))[0])
+            turnaround_times_final[j].append(np.average(turnaround_times_full))
+            turnaround_times_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(turnaround_times_full) / np.sqrt(len(turnaround_times_full)))[0])
 
             outstanding_requests_full = np.array([])
             for i in range(0, nruns):
                 outstanding_requests_full = np.append(outstanding_requests_full, np.array(outstanding_requests[i][(nrounds//2):nrounds]))
 
-            outstanding_requests_final.append(np.average(outstanding_requests_full))
-            outstanding_requests_final_err.append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(outstanding_requests_full) / np.sqrt(len(outstanding_requests_full)))[0])
+            outstanding_requests_final[j].append(np.average(outstanding_requests_full))
+            outstanding_requests_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(outstanding_requests_full) / np.sqrt(len(outstanding_requests_full)))[0])
 
+            print("\tFidelity: "+str(np.average(fidelities_full)))
+            print("\tTurnaround Time: "+str(np.average(turnaround_times_full)))
+            print("\tOutstanding Requests: "+str(np.average(outstanding_requests_full)))
 
-
+    print(fidelities_final)
+    print(turnaround_times_final)
+    print(outstanding_requests_final)
     
 
 
-    plt.subplot(1, 3, 1)
-    plt.errorbar(qs, fidelities_final[0], yerr=fidelities_final_err[0], label="Oldest, K=4")
-    plt.errorbar(qs, fidelities_final[1], yerr=fidelities_final_err[1], label="Oldest, K=8")
-    plt.errorbar(qs, fidelities_final[2], yerr=fidelities_final_err[2], label="Youngest, K=4")
-    plt.errorbar(qs, fidelities_final[3], yerr=fidelities_final_err[3], label="Youngest, K=8")
-    plt.legend()
-    plt.title("Fidelity vs q")
-    plt.ylabel("Fidelity")
-    plt.xlabel("q")
+    # plt.subplot(1, 3, 1)
+    # plt.errorbar(qs, fidelities_final[0], yerr=fidelities_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, fidelities_final[1], yerr=fidelities_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, fidelities_final[2], yerr=fidelities_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, fidelities_final[3], yerr=fidelities_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Fidelity vs q")
+    # plt.ylabel("Fidelity")
+    # plt.xlabel("q")
 
-    plt.subplot(1, 3, 2)
-    plt.errorbar(qs, turnaround_times_final[0], yerr=turnaround_times_final_err[0], label="Oldest, K=4")
-    plt.errorbar(qs, turnaround_times_final[1], yerr=turnaround_times_final_err[1], label="Oldest, K=8")
-    plt.errorbar(qs, turnaround_times_final[2], yerr=turnaround_times_final_err[2], label="Youngest, K=4")
-    plt.errorbar(qs, turnaround_times_final[3], yerr=turnaround_times_final_err[3], label="Youngest, K=8")
-    plt.legend()
-    plt.title("Turnaround Times vs T0")
-    plt.ylabel("Turnaround Time (ns)")
-    plt.xlabel("q")
+    # plt.subplot(1, 3, 2)
+    # plt.errorbar(qs, turnaround_times_final[0], yerr=turnaround_times_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[1], yerr=turnaround_times_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, turnaround_times_final[2], yerr=turnaround_times_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[3], yerr=turnaround_times_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Turnaround Times vs T0")
+    # plt.ylabel("Turnaround Time (ns)")
+    # plt.xlabel("q")
 
-    plt.subplot(1, 3, 3)
-    plt.errorbar(qs, outstanding_requests_final[0], yerr=outstanding_requests_final_err[0], label="Oldest, K=4")
-    plt.errorbar(qs, outstanding_requests_final[1], yerr=outstanding_requests_final_err[1], label="Oldest, K=8")
-    plt.errorbar(qs, outstanding_requests_final[2], yerr=outstanding_requests_final_err[2], label="Youngest, K=4")
-    plt.errorbar(qs, outstanding_requests_final[3], yerr=outstanding_requests_final_err[3], label="Youngest, K=8")
-    plt.legend()
-    plt.title("Outstanding Requests vs T0")
-    plt.ylabel("E-2-E Entanglement Requests")
-    plt.xlabel("q")
+    # plt.subplot(1, 3, 3)
+    # plt.errorbar(qs, outstanding_requests_final[0], yerr=outstanding_requests_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[1], yerr=outstanding_requests_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, outstanding_requests_final[2], yerr=outstanding_requests_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[3], yerr=outstanding_requests_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Outstanding Requests vs T0")
+    # plt.ylabel("E-2-E Entanglement Requests")
+    # plt.xlabel("q")
+
+    plt.suptitle(str(nruns) + " runs (per datapoint) of " + str(nrounds) + " cycles of" + str(scheduler))
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_vs_p():
+    plt.figure(figsize=(24, 6))
+    outstanding_requests_final = [[],[],[],[]]
+    turnaround_times_final = [[],[],[],[]]
+    fidelities_final = [[],[],[],[]]
+
+    outstanding_requests_final_err = [[],[],[],[]]
+    turnaround_times_final_err = [[],[],[],[]]
+    fidelities_final_err = [[],[],[],[]]
+
+    ps = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    params = [["O", "4"], ["O", "8"], ["Y", "4"], ["Y", "8"]]
+    for j in range(0, len(params)):
+        for p in ps:
+            name = "Light_FIFO_"+params[j][0]+"_100_"+str(p)+"_0.9_1000000_p_"+params[j][1]
+            print(name+ "...")
+                        
+            outstanding_requests = []
+            turnaround_times = []
+            fidelities = []
+            for i in range(0, nruns):
+                timestep_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/timestep_data'+str(i)+'.npy', 'rb')
+                job_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/job_data'+str(i)+'.npy', 'rb')
+                e2ee_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/e2ee_data'+str(i)+'.npy', 'rb')
+
+                timestep_temp = []
+                while True:
+                    try:
+                        timestep_temp.append(np.load(timestep_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                job_temp = []
+                while True:
+                    try:
+                        job_temp.append(np.load(job_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                e2ee_temp = []
+                while True:
+                    try:
+                        e2ee_temp.append(np.load(e2ee_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                timestep_data = np.stack(timestep_temp)
+                job_data = np.stack(job_temp)
+                e2ee_data = np.stack(e2ee_temp)
+
+                outstanding_requests.append(timestep_data[:,2])
+                turnaround_times.append(job_data[:,1])
+                fidelities.append(e2ee_data[:,0])
+
+            nrounds = len(outstanding_requests[0]) 
+
+            fidelities_full = np.array([])
+            for i in range(0, nruns):
+                fidelities_full = np.append(fidelities_full, np.array(fidelities[i]))
+
+            fidelities_final[j].append(np.average(fidelities_full))
+            fidelities_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(fidelities_full) / np.sqrt(len(fidelities_full)))[0])
+
+            turnaround_times_full = np.array([])
+            for i in range(0, nruns):
+                turnaround_times_full = np.append(turnaround_times_full, np.array(turnaround_times[i]))
+
+            turnaround_times_final[j].append(np.average(turnaround_times_full))
+            turnaround_times_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(turnaround_times_full) / np.sqrt(len(turnaround_times_full)))[0])
+
+            outstanding_requests_full = np.array([])
+            for i in range(0, nruns):
+                outstanding_requests_full = np.append(outstanding_requests_full, np.array(outstanding_requests[i][(nrounds//2):nrounds]))
+
+            outstanding_requests_final[j].append(np.average(outstanding_requests_full))
+            outstanding_requests_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(outstanding_requests_full) / np.sqrt(len(outstanding_requests_full)))[0])
+
+            print("\tFidelity: "+str(np.average(fidelities_full)))
+            print("\tTurnaround Time: "+str(np.average(turnaround_times_full)))
+            print("\tOutstanding Requests: "+str(np.average(outstanding_requests_full)))
+
+    print(fidelities_final)
+    print(turnaround_times_final)
+    print(outstanding_requests_final)
+    
+
+
+    # plt.subplot(1, 3, 1)
+    # plt.errorbar(qs, fidelities_final[0], yerr=fidelities_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, fidelities_final[1], yerr=fidelities_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, fidelities_final[2], yerr=fidelities_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, fidelities_final[3], yerr=fidelities_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Fidelity vs q")
+    # plt.ylabel("Fidelity")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 2)
+    # plt.errorbar(qs, turnaround_times_final[0], yerr=turnaround_times_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[1], yerr=turnaround_times_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, turnaround_times_final[2], yerr=turnaround_times_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[3], yerr=turnaround_times_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Turnaround Times vs T0")
+    # plt.ylabel("Turnaround Time (ns)")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 3)
+    # plt.errorbar(qs, outstanding_requests_final[0], yerr=outstanding_requests_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[1], yerr=outstanding_requests_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, outstanding_requests_final[2], yerr=outstanding_requests_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[3], yerr=outstanding_requests_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Outstanding Requests vs T0")
+    # plt.ylabel("E-2-E Entanglement Requests")
+    # plt.xlabel("q")
+
+    plt.suptitle(str(nruns) + " runs (per datapoint) of " + str(nrounds) + " cycles of" + str(scheduler))
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_vs_B():
+    plt.figure(figsize=(24, 6))
+    outstanding_requests_final = [[],[],[],[]]
+    turnaround_times_final = [[],[],[],[]]
+    fidelities_final = [[],[],[],[]]
+
+    outstanding_requests_final_err = [[],[],[],[]]
+    turnaround_times_final_err = [[],[],[],[]]
+    fidelities_final_err = [[],[],[],[]]
+
+    Bs = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    params = [["O", "4"], ["O", "8"], ["Y", "4"], ["Y", "8"]]
+    for j in range(0, len(params)):
+        for B in Bs:
+            name = "VeryHeavy_FIFO_"+params[j][0]+"_"+str(B)+"_0.9_0.9_1000000_B_"+params[j][1]
+            print(name+ "...")
+                        
+            outstanding_requests = []
+            turnaround_times = []
+            fidelities = []
+            for i in range(0, nruns):
+                timestep_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/timestep_data'+str(i)+'.npy', 'rb')
+                job_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/job_data'+str(i)+'.npy', 'rb')
+                e2ee_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/e2ee_data'+str(i)+'.npy', 'rb')
+
+                timestep_temp = []
+                while True:
+                    try:
+                        timestep_temp.append(np.load(timestep_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                job_temp = []
+                while True:
+                    try:
+                        job_temp.append(np.load(job_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                e2ee_temp = []
+                while True:
+                    try:
+                        e2ee_temp.append(np.load(e2ee_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                timestep_data = np.stack(timestep_temp)
+                job_data = np.stack(job_temp)
+                e2ee_data = np.stack(e2ee_temp)
+
+                outstanding_requests.append(timestep_data[:,2])
+                turnaround_times.append(job_data[:,1])
+                fidelities.append(e2ee_data[:,0])
+
+            nrounds = len(outstanding_requests[0]) 
+
+            fidelities_full = np.array([])
+            for i in range(0, nruns):
+                fidelities_full = np.append(fidelities_full, np.array(fidelities[i]))
+
+            fidelities_final[j].append(np.average(fidelities_full))
+            fidelities_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(fidelities_full) / np.sqrt(len(fidelities_full)))[0])
+
+            turnaround_times_full = np.array([])
+            for i in range(0, nruns):
+                turnaround_times_full = np.append(turnaround_times_full, np.array(turnaround_times[i]))
+
+            turnaround_times_final[j].append(np.average(turnaround_times_full))
+            turnaround_times_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(turnaround_times_full) / np.sqrt(len(turnaround_times_full)))[0])
+
+            outstanding_requests_full = np.array([])
+            for i in range(0, nruns):
+                outstanding_requests_full = np.append(outstanding_requests_full, np.array(outstanding_requests[i][(nrounds//2):nrounds]))
+
+            outstanding_requests_final[j].append(np.average(outstanding_requests_full))
+            outstanding_requests_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(outstanding_requests_full) / np.sqrt(len(outstanding_requests_full)))[0])
+
+            print("\tFidelity: "+str(np.average(fidelities_full)))
+            print("\tTurnaround Time: "+str(np.average(turnaround_times_full)))
+            print("\tOutstanding Requests: "+str(np.average(outstanding_requests_full)))
+
+    print(fidelities_final)
+    print(turnaround_times_final)
+    print(outstanding_requests_final)
+    
+
+
+    # plt.subplot(1, 3, 1)
+    # plt.errorbar(qs, fidelities_final[0], yerr=fidelities_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, fidelities_final[1], yerr=fidelities_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, fidelities_final[2], yerr=fidelities_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, fidelities_final[3], yerr=fidelities_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Fidelity vs q")
+    # plt.ylabel("Fidelity")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 2)
+    # plt.errorbar(qs, turnaround_times_final[0], yerr=turnaround_times_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[1], yerr=turnaround_times_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, turnaround_times_final[2], yerr=turnaround_times_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[3], yerr=turnaround_times_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Turnaround Times vs T0")
+    # plt.ylabel("Turnaround Time (ns)")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 3)
+    # plt.errorbar(qs, outstanding_requests_final[0], yerr=outstanding_requests_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[1], yerr=outstanding_requests_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, outstanding_requests_final[2], yerr=outstanding_requests_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[3], yerr=outstanding_requests_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Outstanding Requests vs T0")
+    # plt.ylabel("E-2-E Entanglement Requests")
+    # plt.xlabel("q")
+
+    plt.suptitle(str(nruns) + " runs (per datapoint) of " + str(nrounds) + " cycles of" + str(scheduler))
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_vs_T2():
+    plt.figure(figsize=(24, 6))
+    outstanding_requests_final = [[],[],[],[]]
+    turnaround_times_final = [[],[],[],[]]
+    fidelities_final = [[],[],[],[]]
+
+    outstanding_requests_final_err = [[],[],[],[]]
+    turnaround_times_final_err = [[],[],[],[]]
+    fidelities_final_err = [[],[],[],[]]
+
+    t2s = [200000, 400000, 600000, 800000, 1000000, 1200000, 1400000, 1600000, 1800000, 2000000]
+    params = [["O", "4"], ["O", "8"], ["Y", "4"], ["Y", "8"]]
+    for j in range(0, len(params)):
+        for t2 in t2s:
+            name = "VeryHeavy_FIFO_"+params[j][0]+"_100_0.9_0.9_"+str(t2)+"_T2_"+params[j][1]
+            print(name+ "...")
+                        
+            outstanding_requests = []
+            turnaround_times = []
+            fidelities = []
+            for i in range(0, nruns):
+                timestep_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/timestep_data'+str(i)+'.npy', 'rb')
+                job_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/job_data'+str(i)+'.npy', 'rb')
+                e2ee_file = open('/home/aarinaldi/NSSims/Sim_Data/' + name + '/e2ee_data'+str(i)+'.npy', 'rb')
+
+                timestep_temp = []
+                while True:
+                    try:
+                        timestep_temp.append(np.load(timestep_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                job_temp = []
+                while True:
+                    try:
+                        job_temp.append(np.load(job_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                e2ee_temp = []
+                while True:
+                    try:
+                        e2ee_temp.append(np.load(e2ee_file, allow_pickle=True))
+                    except Exception as e:
+                        break
+
+                timestep_data = np.stack(timestep_temp)
+                job_data = np.stack(job_temp)
+                e2ee_data = np.stack(e2ee_temp)
+
+                outstanding_requests.append(timestep_data[:,2])
+                turnaround_times.append(job_data[:,1])
+                fidelities.append(e2ee_data[:,0])
+
+            nrounds = len(outstanding_requests[0]) 
+
+            fidelities_full = np.array([])
+            for i in range(0, nruns):
+                fidelities_full = np.append(fidelities_full, np.array(fidelities[i]))
+
+            fidelities_final[j].append(np.average(fidelities_full))
+            fidelities_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(fidelities_full) / np.sqrt(len(fidelities_full)))[0])
+
+            turnaround_times_full = np.array([])
+            for i in range(0, nruns):
+                turnaround_times_full = np.append(turnaround_times_full, np.array(turnaround_times[i]))
+
+            turnaround_times_final[j].append(np.average(turnaround_times_full))
+            turnaround_times_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(turnaround_times_full) / np.sqrt(len(turnaround_times_full)))[0])
+
+            outstanding_requests_full = np.array([])
+            for i in range(0, nruns):
+                outstanding_requests_full = np.append(outstanding_requests_full, np.array(outstanding_requests[i][(nrounds//2):nrounds]))
+
+            outstanding_requests_final[j].append(np.average(outstanding_requests_full))
+            outstanding_requests_final_err[j].append(scipy.stats.norm.interval(0.95, loc=0, scale=np.std(outstanding_requests_full) / np.sqrt(len(outstanding_requests_full)))[0])
+
+            print("\tFidelity: "+str(np.average(fidelities_full)))
+            print("\tTurnaround Time: "+str(np.average(turnaround_times_full)))
+            print("\tOutstanding Requests: "+str(np.average(outstanding_requests_full)))
+
+    print(fidelities_final)
+    print(turnaround_times_final)
+    print(outstanding_requests_final)
+    
+
+
+    # plt.subplot(1, 3, 1)
+    # plt.errorbar(qs, fidelities_final[0], yerr=fidelities_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, fidelities_final[1], yerr=fidelities_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, fidelities_final[2], yerr=fidelities_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, fidelities_final[3], yerr=fidelities_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Fidelity vs q")
+    # plt.ylabel("Fidelity")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 2)
+    # plt.errorbar(qs, turnaround_times_final[0], yerr=turnaround_times_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[1], yerr=turnaround_times_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, turnaround_times_final[2], yerr=turnaround_times_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, turnaround_times_final[3], yerr=turnaround_times_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Turnaround Times vs T0")
+    # plt.ylabel("Turnaround Time (ns)")
+    # plt.xlabel("q")
+
+    # plt.subplot(1, 3, 3)
+    # plt.errorbar(qs, outstanding_requests_final[0], yerr=outstanding_requests_final_err[0], label="Oldest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[1], yerr=outstanding_requests_final_err[1], label="Oldest, K=8")
+    # plt.errorbar(qs, outstanding_requests_final[2], yerr=outstanding_requests_final_err[2], label="Youngest, K=4")
+    # plt.errorbar(qs, outstanding_requests_final[3], yerr=outstanding_requests_final_err[3], label="Youngest, K=8")
+    # plt.legend()
+    # plt.title("Outstanding Requests vs T0")
+    # plt.ylabel("E-2-E Entanglement Requests")
+    # plt.xlabel("q")
 
     plt.suptitle(str(nruns) + " runs (per datapoint) of " + str(nrounds) + " cycles of" + str(scheduler))
 
@@ -620,5 +906,6 @@ for k in [4, 8]:
 #             l.append("VeryHeavy_FIFO_"+s+"_100_0.9_0.9_"+str(T)+"_B_"+str(k))
 
 # print(l)
-run_list(l)
+# run_list(l)
+plot_vs_B()
 # just_print_values(l)
